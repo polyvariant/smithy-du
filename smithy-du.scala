@@ -31,37 +31,32 @@ import org.jline.terminal.Terminal.Signal
 import fs2.concurrent.SignallingRef
 import org.jline.terminal.Size
 
-trait State {
+private trait State[A] {
   // may be empty in the beginning
-  def path: List[ShapeId]
-  def children: List[ShapeId]
-  def siblings: List[(ShapeId, ShapeClosure)]
-  def isCurrent(sibling: ShapeId): Boolean
+  def path: List[A]
+  def children: List[A]
+  def siblings: List[(A, ShapeClosure)]
+  def isCurrent(sibling: A): Boolean
 
-  def currentShape: ShapeId
+  def currentShape: A
 
-  def nextSibling: State
-  def previousSibling: State
-  def moveDown: State
-  def moveUp: State
+  def nextSibling: State[A]
+  def previousSibling: State[A]
+  def moveDown: State[A]
+  def moveUp: State[A]
 }
 
-given Show[ShapeId] = Show.fromToString
-given Order[ShapeId] = Order.by(_.toString())
+private given Show[ShapeId] = Show.fromToString
+private given Order[ShapeId] = Order.by(_.toString())
 
-case class ShapeClosure(size: Int)
+private case class ShapeClosure(size: Int)
 
-def showRangedSiblings(
-  state: State,
-  range: Int,
-) = ???
-
-enum ScrollItem[+A] {
+private enum ScrollItem[+A] {
   case Ellipsis(count: Int)
   case Item(a: A)
 }
 
-def scrollable[A](
+private def scrollable[A](
   items: List[A],
   isCurrent: A => Boolean,
   maxLeft: Int,
@@ -87,7 +82,7 @@ def scrollable[A](
 
 extension (m: Model) {
 
-  def knowledgeOf[T <: KnowledgeIndex: ClassTag](f: Model => T): T = m
+  private def knowledgeOf[T <: KnowledgeIndex: ClassTag](f: Model => T): T = m
     .getKnowledge(
       scala.reflect.classTag[T].runtimeClass.asInstanceOf[Class[T]],
       f(_),
@@ -95,9 +90,9 @@ extension (m: Model) {
 
 }
 
-case class ShapeCountIndex private (c: Int) extends KnowledgeIndex
+private case class ShapeCountIndex private (c: Int) extends KnowledgeIndex
 
-object ShapeCountIndex {
+private object ShapeCountIndex {
 
   def of(model: Model): Int =
     model.knowledgeOf { m =>
@@ -112,7 +107,7 @@ object ShapeCountIndex {
 }
 
 // todo: do something with terminal size
-def render(model: Model)(state: State, terminalSize: Size): String = {
+private def render[A: Show](model: Model)(state: State[A], terminalSize: Size): String = {
 
   val shapeCount = ShapeCountIndex.of(model)
 
@@ -165,29 +160,29 @@ def render(model: Model)(state: State, terminalSize: Size): String = {
 
 object State {
 
-  case class Impl(
+  private case class Impl[A: Eq](
     index: Int,
-    siblings: List[(ShapeId, ShapeClosure)],
-    path: List[ShapeId],
-    getChildren: ShapeId => List[ShapeId],
-    getClosure: ShapeId => ShapeClosure,
-    previous: Option[State],
-  ) extends State {
-    val currentShape: ShapeId = siblings(index)._1
+    siblings: List[(A, ShapeClosure)],
+    path: List[A],
+    getChildren: A => List[A],
+    getClosure: A => ShapeClosure,
+    parent: Option[State[A]],
+  ) extends State[A] {
+    val currentShape: A = siblings(index)._1
 
-    def isCurrent(sibling: ShapeId): Boolean = currentShape === sibling
+    def isCurrent(sibling: A): Boolean = currentShape === sibling
 
-    def children: List[ShapeId] = getChildren(siblings(index)._1)
+    def children: List[A] = getChildren(siblings(index)._1)
 
-    def nextSibling: State = copy(
+    def nextSibling: State[A] = copy(
       index = (index + 1) % siblings.size
     )
 
-    def previousSibling: State = copy(
+    def previousSibling: State[A] = copy(
       index = (index - 1 + siblings.size) % siblings.size
     )
 
-    def moveDown: State = {
+    def moveDown: State[A] = {
       val self = siblings(index)
 
       if (children.isEmpty)
@@ -199,14 +194,14 @@ object State {
           path = self.head :: path,
           getChildren = getChildren,
           getClosure = getClosure,
-          previous = Some(this),
+          parent = Some(this),
         )
     }
 
-    def moveUp: State = previous.getOrElse(this)
+    def moveUp: State[A] = parent.getOrElse(this)
   }
 
-  def init(model: Model): State = {
+  def init(model: Model): State[ShapeId] = {
 
     val siblings = topLevelShapes(model).fproduct(_.closure(model))
 
@@ -216,7 +211,7 @@ object State {
       path = Nil,
       getChildren = _.children(model),
       getClosure = _.closure(model),
-      previous = None,
+      parent = None,
     )
 
   }
@@ -225,7 +220,7 @@ object State {
 
 extension (shape: ToShapeId) {
 
-  def children(model: Model): List[ShapeId] = NeighborProviderIndex
+  private def children(model: Model): List[ShapeId] = NeighborProviderIndex
     .of(model)
     .getProvider()
     .getNeighbors(model.expectShape(shape.toShapeId()))
@@ -238,7 +233,7 @@ extension (shape: ToShapeId) {
     .distinct
     .sortBy(-_.closure(model).size)
 
-  def closure(model: Model) = ShapeClosure(
+  private def closure(model: Model) = ShapeClosure(
     Walker(model)
       .walkShapeIds(model.expectShape(shape.toShapeId()))
       .asScala
@@ -252,7 +247,7 @@ extension (shape: ToShapeId) {
 
 given Eq[RelationshipDirection] = Eq.fromUniversalEquals
 
-def topLevelShapes(model: Model): List[ShapeId] =
+private def topLevelShapes(model: Model): List[ShapeId] =
   // def isRecursive(id: ShapeId): Boolean = TopologicalIndex
   //   .of(model)
   //   .getRecursiveShapes
@@ -278,8 +273,6 @@ def topLevelShapes(model: Model): List[ShapeId] =
     }
     .filterNot(model.expectShape(_).isMemberShape())
     .toList
-
-def marker(s: String) = println(Console.GREEN + s + Console.RESET)
 
 object SmithyDu extends IOApp {
 
@@ -317,7 +310,7 @@ object SmithyDu extends IOApp {
         case List(27, 91, 68) => Key.Left
       }
 
-  private val applyKey: Key => State => State = {
+  private def applyKey[A]: Key => State[A] => State[A] = {
     case Key.Up    => _.previousSibling
     case Key.Down  => _.nextSibling
     case Key.Right => _.moveDown
