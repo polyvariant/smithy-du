@@ -352,7 +352,6 @@ object SmithyDu extends IOApp {
         val applyKeys = fs2
           .Stream
           .repeatEval(IO.blocking(System.in.read()))
-          .takeWhile(_ >= 0)
           .through(decode[IO])
           .map(applyKey)
           .foreach(stateRef.update)
