@@ -6,30 +6,31 @@
 //> using dep co.fs2::fs2-io::3.11.0
 //> using options -Wunused:all, -no-indent
 import cats.Show
+import cats.data.NonEmptyList
+import cats.effect.ExitCode
 import cats.effect.IO
 import cats.effect.IOApp
 import cats.effect.kernel.Resource
 import cats.kernel.Eq
 import cats.kernel.Order
 import cats.syntax.all.*
+import fs2.concurrent.SignallingRef
+import org.jline.terminal.Size
+import org.jline.terminal.Terminal.Signal
 import org.jline.terminal.TerminalBuilder
 import software.amazon.smithy.model.Model
+import software.amazon.smithy.model.knowledge.KnowledgeIndex
 import software.amazon.smithy.model.knowledge.NeighborProviderIndex
+import software.amazon.smithy.model.loader.ModelAssembler
 import software.amazon.smithy.model.neighbor.RelationshipDirection
 import software.amazon.smithy.model.neighbor.Walker
 import software.amazon.smithy.model.shapes.ShapeId
 import software.amazon.smithy.model.shapes.ToShapeId
 
 import scala.jdk.CollectionConverters.*
+import scala.reflect.ClassTag
 
 import util.chaining.*
-import software.amazon.smithy.model.knowledge.KnowledgeIndex
-import scala.reflect.ClassTag
-import cats.effect.ExitCode
-import software.amazon.smithy.model.loader.ModelAssembler
-import org.jline.terminal.Terminal.Signal
-import fs2.concurrent.SignallingRef
-import org.jline.terminal.Size
 
 private trait State[A] {
   // may be empty in the beginning
@@ -106,12 +107,34 @@ private object ShapeCountIndex {
 
 }
 
+trait Ops[A] {
+  extension (a: A) def trimForHistory: A
+}
+
+given Ops[ShapeId] with {
+
+  extension (s: ShapeId) {
+
+    def trimForHistory: ShapeId = s.withNamespace(
+      s.getNamespace().split("\\.").map(_.head).mkString(".")
+    )
+
+  }
+
+}
+
 // todo: do something with terminal size
-private def render[A: Show](model: Model)(state: State[A], terminalSize: Size): String = {
+private def render[A: Show: Ops](model: Model)(state: State[A], terminalSize: Size): String = {
 
   val shapeCount = ShapeCountIndex.of(model)
 
-  val pathStr = show"/ ${state.path.toNel.map(_.reverse.mkString_("-> ", " -> ", "")).orEmpty}"
+  val pathStr =
+    show"/ ${state
+        .path
+        .toNel
+        .map { case NonEmptyList(head, tail) => NonEmptyList(head, tail.map(_.trimForHistory)) }
+        .map(_.reverse.mkString_("-> ", " -> ", ""))
+        .orEmpty}"
 
   val siblingSelector = scrollable(
     items = state.siblings,
@@ -168,20 +191,20 @@ object State {
     getClosure: A => Closure,
     parent: Option[State[A]],
   ) extends State[A] {
-    val siblings: List[(A, Closure)] = siblingItems.fproduct(getClosure).sortBy(-_._2.size)
+    lazy val siblingCount = siblingItems.size
 
-    val currentShape: A = siblings(index)._1
+    lazy val siblings: List[(A, Closure)] = siblingItems.fproduct(getClosure).sortBy(-_._2.size)
+    lazy val currentShape: A = siblings(index)._1
+    lazy val children: List[A] = getChildren(siblings(index)._1)
 
     def isCurrent(sibling: A): Boolean = currentShape === sibling
 
-    val children: List[A] = getChildren(siblings(index)._1)
-
     def nextSibling: State[A] = copy(
-      index = (index + 1) % siblings.size
+      index = (index + 1) % siblingCount
     )
 
     def previousSibling: State[A] = copy(
-      index = (index - 1 + siblings.size) % siblings.size
+      index = (index - 1 + siblingCount) % siblingCount
     )
 
     def moveDown: State[A] = {
@@ -269,6 +292,14 @@ private def topLevelShapes(model: Model): List[ShapeId] =
     }
     .filterNot(model.expectShape(_).isMemberShape())
     .toList
+
+def log(s: String) = IO.blocking(os.write.append(os.pwd / "log.txt", s + "\n"))
+
+def logUnsafe(s: String): Unit = {
+  import cats.effect.unsafe.implicits.global
+
+  log(s).unsafeRunAndForget()
+}
 
 object SmithyDu extends IOApp {
 
