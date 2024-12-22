@@ -26,6 +26,10 @@ import util.chaining.*
 import software.amazon.smithy.model.knowledge.KnowledgeIndex
 import scala.reflect.ClassTag
 import cats.effect.ExitCode
+import software.amazon.smithy.model.loader.ModelAssembler
+import org.jline.terminal.Terminal.Signal
+import fs2.concurrent.SignallingRef
+import org.jline.terminal.Size
 
 trait State {
   // may be empty in the beginning
@@ -107,7 +111,8 @@ object ShapeCountIndex {
 
 }
 
-def render(state: State, model: Model): String = {
+// todo: do something with terminal size
+def render(model: Model)(state: State, terminalSize: Size): String = {
 
   val shapeCount = ShapeCountIndex.of(model)
 
@@ -282,52 +287,85 @@ object SmithyDu extends IOApp {
     case Up, Down, Right, Left
   }
 
-  def run(args: List[String]): IO[ExitCode] = IO
-    .blocking {
-      val p = os.FilePath(args.head).resolveFrom(os.pwd)
+  private def loadModel(args: List[String]) = IO.blocking {
+    val paths = args.map(os.FilePath(_).resolveFrom(os.pwd))
 
-      val _ = println(s"Loading model from $p...")
+    val _ = println(s"Loading model from ${args.mkString(", ")}...")
 
-      Model
-        .assembler()
-        .discoverModels()
-        .addUnparsedModel(
-          p.last,
-          os.read(p),
-        )
-        .assemble()
-        .unwrap()
-    }
-    .flatMap(runWithModel)
+    Model
+      .assembler()
+      .discoverModels()
+      .putProperty(ModelAssembler.ALLOW_UNKNOWN_TRAITS, true)
+      .tap { modass =>
+        paths.foreach { p =>
+          modass.addImport(p.toNIO)
+        }
+      }
+      .assemble()
+      .unwrap()
+  }
 
-  def runWithModel(model: Model) = fs2
+  def run(args: List[String]): IO[ExitCode] = loadModel(args).flatMap(runWithModel)
+
+  private def decode[F[_]]: fs2.Pipe[F, Int, Key] =
+    _.sliding(3)
+      .map(_.toList)
+      .collect {
+        case List(27, 91, 65) => Key.Up
+        case List(27, 91, 66) => Key.Down
+        case List(27, 91, 67) => Key.Right
+        case List(27, 91, 68) => Key.Left
+      }
+
+  private val applyKey: Key => State => State = {
+    case Key.Up    => _.previousSibling
+    case Key.Down  => _.nextSibling
+    case Key.Right => _.moveDown
+    case Key.Left  => _.moveUp
+  }
+
+  private def runWithModel(model: Model) = fs2
     .Stream
     .resource(
       Resource.fromAutoCloseable(IO.blocking(TerminalBuilder.builder().system(true).build()))
     )
-    .evalMap { terminal =>
-      IO.blocking(terminal.enterRawMode()).void
+    .evalTap { terminal =>
+      IO.blocking(terminal.enterRawMode())
     }
-    .flatMap { _ =>
-      fs2.Stream.repeatEval(IO.blocking(System.in.read()))
-    }
-    .sliding(3)
-    .map(_.toList)
-    .collect {
-      case List(27, 91, 65) => Key.Up
-      case List(27, 91, 66) => Key.Down
-      case List(27, 91, 67) => Key.Right
-      case List(27, 91, 68) => Key.Left
-    }
-    .scan(State.init(model)) { (state, key) =>
-      key match {
-        case Key.Up    => state.previousSibling
-        case Key.Down  => state.nextSibling
-        case Key.Right => state.moveDown
-        case Key.Left  => state.moveUp
+    .flatMap { term =>
+      val mkSizeSignal = fs2
+        .Stream
+        .eval(
+          IO(term.getSize())
+            .flatMap(SignallingRef[IO].of)
+            .flatTap { ref =>
+              IO(
+                term.handle(Signal.WINCH, s => ref.set(term.getSize()).unsafeRunSync()(runtime))
+              )
+            }
+            .widen[fs2.concurrent.Signal[IO, Size]]
+        )
+
+      val mkStateRef = fs2.Stream.eval(SignallingRef[IO].of(State.init(model)))
+
+      (mkSizeSignal, mkStateRef).flatMapN { (size, stateRef) =>
+        val applyKeys = fs2
+          .Stream
+          .repeatEval(IO.blocking(System.in.read()))
+          .takeWhile(_ >= 0)
+          .through(decode[IO])
+          .map(applyKey)
+          .foreach(stateRef.update)
+
+        val renderState =
+          (stateRef, size)
+            .mapN(render(model))
+            .discrete
+
+        renderState
+          .concurrently(applyKeys)
       }
     }
-    .map(render(_, model))
     .evalMap { current =>
       val clearScreen = "\u001b[H\u001b[2J"
       IO.println(clearScreen + current)
