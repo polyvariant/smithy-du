@@ -190,21 +190,28 @@ object State {
     getChildren: A => List[A],
     getClosure: A => Closure,
     parent: Option[State[A]],
+    // cache the siblings to avoid recalculating them when moving between them
+    siblingsCache: Option[List[(A, Closure)]],
   ) extends State[A] {
     lazy val siblingCount = siblingItems.size
 
-    lazy val siblings: List[(A, Closure)] = siblingItems.fproduct(getClosure).sortBy(-_._2.size)
+    lazy val siblings: List[(A, Closure)] = siblingsCache.getOrElse(
+      siblingItems.fproduct(getClosure).sortBy(-_._2.size)
+    )
+
     lazy val currentShape: A = siblings(index)._1
     lazy val children: List[A] = getChildren(siblings(index)._1)
 
     def isCurrent(sibling: A): Boolean = currentShape === sibling
 
     def nextSibling: State[A] = copy(
-      index = (index + 1) % siblingCount
+      index = (index + 1) % siblingCount,
+      siblingsCache = Some(siblings),
     )
 
     def previousSibling: State[A] = copy(
-      index = (index - 1 + siblingCount) % siblingCount
+      index = (index - 1 + siblingCount) % siblingCount,
+      siblingsCache = Some(siblings),
     )
 
     def moveDown: State[A] = {
@@ -220,6 +227,7 @@ object State {
           getChildren = getChildren,
           getClosure = getClosure,
           parent = Some(this),
+          siblingsCache = None,
         )
     }
 
@@ -233,6 +241,7 @@ object State {
     getChildren = _.children(model),
     getClosure = _.closure(model),
     parent = None,
+    siblingsCache = None,
   )
 
 }
