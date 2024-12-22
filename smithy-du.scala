@@ -351,6 +351,7 @@ object SmithyDu extends IOApp {
             .discrete
 
         renderState
+          .changes
           .concurrently(applyKeys)
       }
     }
