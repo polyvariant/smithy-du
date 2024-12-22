@@ -35,7 +35,7 @@ private trait State[A] {
   // may be empty in the beginning
   def path: List[A]
   def children: List[A]
-  def siblings: List[(A, ShapeClosure)]
+  def siblings: List[(A, Closure)]
   def isCurrent(sibling: A): Boolean
 
   def currentShape: A
@@ -49,7 +49,7 @@ private trait State[A] {
 private given Show[ShapeId] = Show.fromToString
 private given Order[ShapeId] = Order.by(_.toString())
 
-private case class ShapeClosure(size: Int)
+private case class Closure(size: Int)
 
 private enum ScrollItem[+A] {
   case Ellipsis(count: Int)
@@ -165,10 +165,10 @@ object State {
     siblingItems: List[A],
     path: List[A],
     getChildren: A => List[A],
-    getClosure: A => ShapeClosure,
+    getClosure: A => Closure,
     parent: Option[State[A]],
   ) extends State[A] {
-    val siblings: List[(A, ShapeClosure)] = siblingItems.fproduct(getClosure).sortBy(_._2.size)
+    val siblings: List[(A, Closure)] = siblingItems.fproduct(getClosure).sortBy(-_._2.size)
 
     val currentShape: A = siblings(index)._1
 
@@ -229,7 +229,7 @@ extension (shape: ToShapeId) {
     .distinct
     .sortBy(-_.closure(model).size)
 
-  private def closure(model: Model) = ShapeClosure(
+  private def closure(model: Model) = Closure(
     Walker(model)
       .walkShapeIds(model.expectShape(shape.toShapeId()))
       .asScala
