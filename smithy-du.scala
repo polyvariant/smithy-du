@@ -31,6 +31,7 @@ import scala.jdk.CollectionConverters.*
 import scala.reflect.ClassTag
 
 import util.chaining.*
+import scala.collection.concurrent.TrieMap
 
 private trait State[A] {
   // may be empty in the beginning
@@ -190,14 +191,10 @@ object State {
     getChildren: A => List[A],
     getClosure: A => Closure,
     parent: Option[State[A]],
-    // cache the siblings to avoid recalculating them when moving between them
-    siblingsCache: Option[List[(A, Closure)]],
   ) extends State[A] {
     lazy val siblingCount = siblingItems.size
 
-    lazy val siblings: List[(A, Closure)] = siblingsCache.getOrElse(
-      siblingItems.fproduct(getClosure).sortBy(-_._2.size)
-    )
+    lazy val siblings: List[(A, Closure)] = siblingItems.fproduct(getClosure).sortBy(-_._2.size)
 
     lazy val currentShape: A = siblings(index)._1
     lazy val children: List[A] = getChildren(siblings(index)._1)
@@ -205,13 +202,11 @@ object State {
     def isCurrent(sibling: A): Boolean = currentShape === sibling
 
     def nextSibling: State[A] = copy(
-      index = (index + 1) % siblingCount,
-      siblingsCache = Some(siblings),
+      index = (index + 1) % siblingCount
     )
 
     def previousSibling: State[A] = copy(
-      index = (index - 1 + siblingCount) % siblingCount,
-      siblingsCache = Some(siblings),
+      index = (index - 1 + siblingCount) % siblingCount
     )
 
     def moveDown: State[A] = {
@@ -227,7 +222,6 @@ object State {
           getChildren = getChildren,
           getClosure = getClosure,
           parent = Some(this),
-          siblingsCache = None,
         )
     }
 
@@ -241,9 +235,31 @@ object State {
     getChildren = _.children(model),
     getClosure = _.closure(model),
     parent = None,
-    siblingsCache = None,
   )
 
+}
+
+case class ClosureIndex private (model: Model) extends KnowledgeIndex {
+  private val closureCache: TrieMap[ShapeId, Closure] = TrieMap.empty
+
+  def forShape(shapeId: ShapeId): Closure = closureCache.getOrElseUpdate(
+    shapeId,
+    Closure(
+      Walker(model)
+        .walkShapeIds(model.expectShape(shapeId))
+        .asScala
+        // member shapes aren't counted for closure sizes
+        .filterNot(_.hasMember())
+        .filterNot(_ === shapeId)
+        .size
+    ),
+  )
+
+}
+
+object ClosureIndex {
+
+  def of(model: Model): ClosureIndex = model.knowledgeOf(ClosureIndex(_))
 }
 
 extension (shape: ToShapeId) {
@@ -261,15 +277,7 @@ extension (shape: ToShapeId) {
     .distinct
     .sortBy(-_.closure(model).size)
 
-  private def closure(model: Model) = Closure(
-    Walker(model)
-      .walkShapeIds(model.expectShape(shape.toShapeId()))
-      .asScala
-      // member shapes aren't counted for closure sizes
-      .filterNot(_.hasMember())
-      .filterNot(_ == shape.toShapeId())
-      .size
-  )
+  private def closure(model: Model) = ClosureIndex.of(model).forShape(shape.toShapeId())
 
 }
 
