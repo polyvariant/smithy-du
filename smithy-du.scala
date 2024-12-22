@@ -162,17 +162,19 @@ object State {
 
   private case class Impl[A: Eq](
     index: Int,
-    siblings: List[(A, ShapeClosure)],
+    siblingItems: List[A],
     path: List[A],
     getChildren: A => List[A],
     getClosure: A => ShapeClosure,
     parent: Option[State[A]],
   ) extends State[A] {
+    val siblings: List[(A, ShapeClosure)] = siblingItems.fproduct(getClosure).sortBy(_._2.size)
+
     val currentShape: A = siblings(index)._1
 
     def isCurrent(sibling: A): Boolean = currentShape === sibling
 
-    def children: List[A] = getChildren(siblings(index)._1)
+    val children: List[A] = getChildren(siblings(index)._1)
 
     def nextSibling: State[A] = copy(
       index = (index + 1) % siblings.size
@@ -190,7 +192,7 @@ object State {
       else
         Impl(
           index = 0,
-          siblings = children.fproduct(getClosure),
+          siblingItems = children,
           path = self.head :: path,
           getChildren = getChildren,
           getClosure = getClosure,
@@ -201,20 +203,14 @@ object State {
     def moveUp: State[A] = parent.getOrElse(this)
   }
 
-  def init(model: Model): State[ShapeId] = {
-
-    val siblings = topLevelShapes(model).fproduct(_.closure(model))
-
-    Impl(
-      index = 0,
-      siblings = siblings.sortBy(-_._2.size),
-      path = Nil,
-      getChildren = _.children(model),
-      getClosure = _.closure(model),
-      parent = None,
-    )
-
-  }
+  def init(model: Model): State[ShapeId] = Impl(
+    index = 0,
+    siblingItems = topLevelShapes(model),
+    path = Nil,
+    getChildren = _.children(model),
+    getClosure = _.closure(model),
+    parent = None,
+  )
 
 }
 
