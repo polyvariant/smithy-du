@@ -338,6 +338,7 @@ object SmithyDu extends IOApp {
           modass.addImport(p.toNIO)
         }
       }
+      .disableValidation()
       .assemble()
       .unwrap()
   }
